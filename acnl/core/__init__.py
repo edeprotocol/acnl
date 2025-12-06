@@ -9,10 +9,16 @@ Core types for the energy-compute field:
 - SigEnvelope: signed payloads
 - FieldPoint, LocalField: tensor views
 """
+from .coord import (
+    Coord,
+    RegionID,
+    region_contains,
+    region_depth,
+    common_ancestor,
+)
 from .ids import (
     EntityID,
     EntityKind,
-    Coord,
     make_entity_id,
     parse_entity_id,
     entity_kind,
@@ -23,8 +29,12 @@ from .ids import (
     lfi_id,
     rc_id,
     gh_id,
-    region_contains,
-    region_depth,
+    sensor_id,
+    agent_id,
+    sovereign_id,
+    substation_id,
+    line_id,
+    storage_id,
 )
 from .observables import (
     ObservableCategory,
@@ -73,11 +83,13 @@ from .tensors import (
 )
 
 __all__ = [
+    # coord
+    "Coord", "RegionID", "region_contains", "region_depth", "common_ancestor",
     # ids
-    "EntityID", "EntityKind", "Coord",
+    "EntityID", "EntityKind",
     "make_entity_id", "parse_entity_id", "entity_kind", "is_entity_kind",
     "plant_id", "compute_node_id", "pattern_id", "lfi_id", "rc_id", "gh_id",
-    "region_contains", "region_depth",
+    "sensor_id", "agent_id", "sovereign_id", "substation_id", "line_id", "storage_id",
     # observables
     "ObservableCategory", "EnergyObservableKind", "ComputeObservableKind",
     "CapitalObservableKind", "ObservableKind", "Observable", "Number",

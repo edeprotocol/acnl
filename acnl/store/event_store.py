@@ -255,3 +255,115 @@ class EventStore:
                 "regions": len(self._by_region),
                 "subjects": len(self._by_subject),
             }
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Canonical API (as per ACNL spec)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def append(self, event: Assertion | Claim | Challenge | Proof) -> None:
+        """
+        Append any event type to the store.
+
+        This is the primary ingestion API for ACNL events.
+        """
+        if isinstance(event, Assertion):
+            # Wrap in SigEnvelope for consistency
+            env = SigEnvelope(
+                payload=event,
+                signer=event.issuer,
+                alg="mock",
+                signature=b"",
+                timestamp_ms=event.coord.ts_ms,
+            )
+            self.add_assertion(env)
+        elif isinstance(event, Claim):
+            env = SigEnvelope(
+                payload=event,
+                signer=event.claimant,
+                alg="mock",
+                signature=b"",
+                timestamp_ms=event.coord.ts_ms,
+            )
+            self.add_claim(env)
+        elif isinstance(event, Challenge):
+            self.add_challenge(event)
+        elif isinstance(event, Proof):
+            self.add_proof(event)
+        else:
+            raise TypeError(f"Unknown event type: {type(event)}")
+
+    def get_events(
+        self,
+        region_id: str,
+        kind: type,
+        since_ms: Optional[int] = None,
+        until_ms: Optional[int] = None,
+    ) -> List:
+        """
+        Query events by region, type, and time window.
+
+        Args:
+            region_id: Region to query
+            kind: Event type (Assertion, Claim, Challenge, Proof)
+            since_ms: Start of time window (inclusive)
+            until_ms: End of time window (inclusive)
+
+        Returns:
+            List of events matching criteria
+        """
+        with self._lock:
+            if kind == Assertion:
+                envs = self._by_region.get(region_id, [])
+                events = [e.payload for e in envs]
+            elif kind == Claim:
+                events = [
+                    e.payload for e in self.claims
+                    if e.payload.coord.region_id == region_id
+                ]
+            elif kind == Challenge:
+                events = [
+                    c for c in self.challenges
+                    if c.coord.region_id == region_id
+                ]
+            elif kind == Proof:
+                events = [
+                    p for p in self.proofs
+                    if p.coord.region_id == region_id
+                ]
+            else:
+                return []
+
+            # Time filtering
+            if since_ms is not None:
+                events = [e for e in events if e.coord.ts_ms >= since_ms]
+            if until_ms is not None:
+                events = [e for e in events if e.coord.ts_ms <= until_ms]
+
+            return events
+
+    def get_assertions_by_region(
+        self,
+        region_id: str,
+        since_ms: Optional[int] = None,
+        until_ms: Optional[int] = None,
+    ) -> List[Assertion]:
+        """Convenience method for assertion queries."""
+        return self.get_events(region_id, Assertion, since_ms, until_ms)
+
+    def get_claims_by_region(
+        self,
+        region_id: str,
+        since_ms: Optional[int] = None,
+        until_ms: Optional[int] = None,
+    ) -> List[Claim]:
+        """Convenience method for claim queries."""
+        return self.get_events(region_id, Claim, since_ms, until_ms)
+
+    def get_proofs_by_region(
+        self,
+        region_id: str,
+        since_ms: Optional[int] = None,
+        until_ms: Optional[int] = None,
+    ) -> List[Proof]:
+        """Convenience method for proof queries."""
+        return self.get_events(region_id, Proof, since_ms, until_ms)

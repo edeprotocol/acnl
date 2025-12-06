@@ -8,6 +8,10 @@ This is NOT a REST API. This is what an AGI pattern uses to:
 - Get tau limits
 - Register consumption
 - Respond to challenges
+- Emit assertions, claims, challenges, proofs
+
+This is the MANDATORY interface for agents/AGI/SSI to interact with the
+energy-compute fractal mesh.
 """
 
 from __future__ import annotations
@@ -16,8 +20,10 @@ from typing import Dict, List, Optional, Any, Tuple
 import numpy as np
 
 from ..core.ids import EntityID, pattern_id, Coord
+from ..core.coord import RegionID
 from ..core.fields import LocalField, FieldPoint, STANDARD_COMPUTE_FEATURES
-from ..core.events import ComputeEvent
+from ..core.events import ComputeEvent, Assertion, Claim, Challenge, Proof
+from ..core.tensors import field_to_tensor
 from ..control.lfi import LocalFieldIntegrator
 
 
@@ -157,3 +163,134 @@ class AgentClient:
     def get_regional_summary(self) -> Dict[str, Any]:
         """Get regional energy summary."""
         return self._lfi.get_summary()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Event emission API (for agents/AGI/SSI)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def emit_assertions(self, assertions: List[Assertion]) -> None:
+        """
+        Emit multiple assertions to the event store.
+
+        This is the primary way for agents to report observed state
+        (energy readings, compute metrics, etc.) to the mesh.
+        """
+        for assertion in assertions:
+            self._lfi.store.append(assertion)
+
+    def emit_claim(self, claim: Claim) -> None:
+        """
+        Emit a claim to the event store.
+
+        Claims bundle assertions together and represent a coherent
+        statement about the state of an entity.
+        """
+        self._lfi.store.append(claim)
+
+    def issue_challenge(self, challenge: Challenge) -> None:
+        """
+        Issue a challenge for physical verification.
+
+        Challenges are used to verify that reported state matches
+        physical reality (e.g., power consumption correlates with compute).
+        """
+        self._lfi.store.append(challenge)
+
+    def submit_proof(self, proof: Proof) -> None:
+        """
+        Submit a proof in response to a challenge.
+
+        Proofs contain evidence that the challenged entity's behavior
+        matches its reported state.
+        """
+        self._lfi.store.append(proof)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Field query API (tensor-native)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def get_local_field(self, region_id: RegionID, horizon_ms: int = 5000) -> Optional[LocalField]:
+        """
+        Get local field for a specific region.
+
+        Args:
+            region_id: The region to query (e.g., "earth/us/west")
+            horizon_ms: Time horizon for aggregation in milliseconds
+
+        Returns:
+            LocalField containing aggregated state, or None if no data
+        """
+        # If querying own region, use cached field
+        if region_id == self._lfi.region_id:
+            return self._lfi.get_field()
+
+        # For other regions, we would need to query the RC or GH
+        # For now, return None (cross-region queries require mesh routing)
+        return None
+
+    def get_local_field_tensor(
+        self,
+        region_id: RegionID,
+        horizon_ms: int = 5000,
+        feature_keys: List[str] | None = None,
+    ) -> Tuple[np.ndarray, Dict[str, int]]:
+        """
+        Get local field as a tensor for ML/AGI consumption.
+
+        Args:
+            region_id: The region to query
+            horizon_ms: Time horizon for aggregation
+            feature_keys: Optional list of features to include
+
+        Returns:
+            (tensor, feature_index) where:
+            - tensor has shape (n_subjects, n_features)
+            - feature_index maps feature name -> column index
+        """
+        field = self.get_local_field(region_id, horizon_ms)
+
+        if field is None:
+            features = feature_keys or STANDARD_COMPUTE_FEATURES
+            empty = np.zeros((0, len(features)), dtype=np.float32)
+            feature_index = {f: i for i, f in enumerate(features)}
+            return empty, feature_index
+
+        features = feature_keys or STANDARD_COMPUTE_FEATURES
+        tensor = field_to_tensor(field, features)
+        feature_index = {f: i for i, f in enumerate(features)}
+
+        return tensor, feature_index
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Convenience methods for common operations
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def get_tau(self) -> float:
+        """Get current tau limit (shorthand for get_tau_limit)."""
+        return self.get_tau_limit()
+
+    def observe_power(self, subject: EntityID, power_mw: float) -> Assertion:
+        """
+        Create and emit an assertion about power consumption.
+
+        Args:
+            subject: The entity being observed
+            power_mw: Power consumption in MW
+
+        Returns:
+            The created assertion
+        """
+        from ..core.observables import Observable, EnergyObservableKind, UNIT_MW
+
+        assertion = Assertion.create(
+            issuer=self._pattern_id,
+            subject=subject,
+            coord=Coord.now(self._lfi.region_id),
+            observable=Observable(
+                kind=EnergyObservableKind.CONSUMPTION_POWER,
+                value=power_mw,
+                unit=UNIT_MW,
+            ),
+        )
+        self._lfi.store.append(assertion)
+        return assertion

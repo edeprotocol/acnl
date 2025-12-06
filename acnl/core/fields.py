@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Literal, Callable
 import time
 
-from .ids import EntityID, Coord, entity_kind
+from .coord import Coord
+from .ids import EntityID, entity_kind
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -91,6 +92,21 @@ class FieldPoint:
     @property
     def temp_celsius(self) -> float:
         return self.get("temp_celsius", 0.0)
+
+    @property
+    def price_e_per_mwh(self) -> float:
+        """Price per MWh (alias for price_energy)."""
+        return self.get("price_energy", 0.0)
+
+    @property
+    def price_tcu(self) -> float:
+        """Price per TCU (Trusted Compute Unit)."""
+        return self.get("price_tcu", 0.0)
+
+    @property
+    def congestion(self) -> float:
+        """Congestion level 0..1 (derived from line_loading)."""
+        return self.get("line_loading", 0.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

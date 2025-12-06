@@ -1,5 +1,5 @@
 """
-ACNL Core — Entity Identification and Coordinates
+ACNL Core — Entity Identification
 
 NAIVE DESIGN (rejected):
 - UUIDs everywhere, no semantic meaning
@@ -17,9 +17,10 @@ FRACTAL DESIGN (implemented):
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
 from typing import NewType, Literal, Tuple
-import time
+
+# Re-export Coord and RegionID for backwards compatibility
+from .coord import Coord, RegionID, region_contains, region_depth, common_ancestor
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTITY IDENTITY
@@ -103,56 +104,25 @@ def gh_id(foyer: str = "earth") -> EntityID:
     return make_entity_id("gh", foyer)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SPATIO-TEMPORAL COORDINATES
-# ══════════════════════════════════════════════════════════════════════════════
-
-@dataclass(frozen=True)
-class Coord:
-    """
-    Spatio-temporal coordinate in energy-compute graph.
-
-    Region hierarchy:
-      earth/eu/fr/idf/dc-paris-1
-      earth/na/us/ca/dc-sfo-1
-      orbit/leo/starlink-cluster-7
-      mars/valles/base-alpha
-
-    Time: monotonic milliseconds since epoch.
-    """
-    region_id: str
-    ts_ms: int
-
-    @staticmethod
-    def now(region_id: str) -> "Coord":
-        return Coord(region_id=region_id, ts_ms=int(time.time() * 1000))
-
-    def age_ms(self, now_ms: int | None = None) -> int:
-        if now_ms is None:
-            now_ms = int(time.time() * 1000)
-        return now_ms - self.ts_ms
-
-    def parent_region(self) -> str | None:
-        """Get parent region (e.g., 'earth/eu/fr' → 'earth/eu')."""
-        parts = self.region_id.rsplit("/", 1)
-        if len(parts) > 1:
-            return parts[0]
-        return None
-
-    def region_hierarchy(self) -> list[str]:
-        """Get region hierarchy as list (e.g., ['earth', 'us', 'west', 'dc-1'])."""
-        return self.region_id.split("/")
-
-    def foyer(self) -> str:
-        """Get top-level foyer (earth, mars, orbit)."""
-        return self.region_id.split("/")[0]
+def sensor_id(name: str) -> EntityID:
+    return make_entity_id("sensor", name)
 
 
-def region_contains(parent: str, child: str) -> bool:
-    """Check if parent region contains child region."""
-    return child == parent or child.startswith(parent + "/")
+def agent_id(name: str) -> EntityID:
+    return make_entity_id("agent", name)
 
 
-def region_depth(region_id: str) -> int:
-    """Return depth of region in hierarchy."""
-    return region_id.count("/")
+def sovereign_id(name: str) -> EntityID:
+    return make_entity_id("sovereign", name)
+
+
+def substation_id(name: str) -> EntityID:
+    return make_entity_id("substation", name)
+
+
+def line_id(name: str) -> EntityID:
+    return make_entity_id("line", name)
+
+
+def storage_id(name: str) -> EntityID:
+    return make_entity_id("storage", name)
