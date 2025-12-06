@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sfl"
+name = "acnl"
 version = "0.1.0"
-description = "Synthetic Field Layer with Energy-Compute Fractal Mesh"
+description = "ACNL - Autonomous Compute/Energy Nervous Layer"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -37,11 +37,12 @@ all = [
 ]
 
 [project.scripts]
+acnl = "acnl.cli:main"
 mesh = "sfl.mesh.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sfl*"]
+include = ["acnl*", "sfl*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
