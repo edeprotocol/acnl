@@ -1,26 +1,15 @@
 """
-ACNL Integration Module - Hooks for SFL and sensor simulation.
+ACNL Integration — External Integrations
+
+Sensors, SFL hooks, and external adapters.
 """
-from .sensors import (
-    SensorConfig,
-    SimulatedSensor,
-    SensorRegistry,
-    generate_simulated_assertions,
-)
-from .sfl_hook import (
-    TauAllocation,
-    SFLEnergyHook,
-    EnergyConstrainedAllocator,
-)
+from .sensors import SimulatedSensor, SensorInterface, generate_simulated_assertions
+from .sfl_hook import SFLEnergyHook, EnergyConstrainedAllocator
 
 __all__ = [
-    # Sensors
-    "SensorConfig",
     "SimulatedSensor",
-    "SensorRegistry",
+    "SensorInterface",
     "generate_simulated_assertions",
-    # SFL Hook
-    "TauAllocation",
     "SFLEnergyHook",
     "EnergyConstrainedAllocator",
 ]

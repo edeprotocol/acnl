@@ -1,24 +1,18 @@
 """
-ACNL Economics Module - Energy accounts and settlement.
+ACNL Econ — Economic Layer
+
+Application layer for energy accounts and settlement.
+Not the OS — patterns don't pay, they survive or die.
 """
-from .accounts import (
-    AccountStatus,
-    EnergyAccount,
-    Transaction,
-    AccountLedger,
-)
-from .settlement import (
-    SettlementPeriod,
-    SettlementConfig,
-    SettlementEngine,
-)
+from .accounts import EnergyAccount, AccountLedger, AccountStatus, Transaction
+from .settlement import SettlementEngine, SettlementConfig, SettlementPeriod
 
 __all__ = [
-    "AccountStatus",
     "EnergyAccount",
-    "Transaction",
     "AccountLedger",
-    "SettlementPeriod",
-    "SettlementConfig",
+    "AccountStatus",
+    "Transaction",
     "SettlementEngine",
+    "SettlementConfig",
+    "SettlementPeriod",
 ]

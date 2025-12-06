@@ -1,15 +1,28 @@
+"""
+ACNL Control — Global Harmonizer (GH)
+
+GH = top level of the fractal hierarchy.
+Civilizational-scale coordination.
+
+Responsibilities:
+- Aggregate summaries from all Regional Coordinators
+- Compute global constraints and policies
+- Balance load across regions
+- Optimize for global objectives (carbon, efficiency, Kardashev trajectory)
+"""
+
 from __future__ import annotations
-
-import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+import time
 
-from acnl.energy.types import EntityID, make_entity_id
+from ..core.ids import EntityID, gh_id
 
 
 @dataclass
 class GHConfig:
     """Configuration for Global Harmonizer."""
+    foyer: str = "earth"
     gh_name: str = "gh-1"
     global_carbon_target: float = 100.0  # gCO2/kWh target
     harmonize_interval_ms: int = 10000
@@ -32,18 +45,12 @@ class RCSummary:
 
 class GlobalHarmonizer:
     """
-    Global Harmonizer (GH) - top level of the fractal hierarchy.
-
-    Responsibilities:
-    - Aggregate summaries from all Regional Coordinators
-    - Compute global constraints and policies
-    - Balance load across regions
-    - Optimize for global objectives (carbon, efficiency)
+    Global Harmonizer — top level of the fractal hierarchy.
     """
 
     def __init__(self, config: GHConfig | None = None):
         self._config = config or GHConfig()
-        self._gh_id = make_entity_id("gh", self._config.gh_name)
+        self._gh_id = gh_id(self._config.foyer)
 
         self._rc_summaries: Dict[EntityID, RCSummary] = {}
         self._global_constraints: Dict[str, float] = {}
@@ -54,13 +61,18 @@ class GlobalHarmonizer:
     def gh_id(self) -> EntityID:
         return self._gh_id
 
-    def receive_rc_summary(self, summary: Dict) -> None:
-        """Receive summary from a Regional Coordinator."""
-        rc_id = EntityID(summary["rc_id"])
+    @property
+    def foyer(self) -> str:
+        return self._config.foyer
 
-        self._rc_summaries[rc_id] = RCSummary(
-            rc_id=rc_id,
-            region_id=summary["region_id"],
+    def receive_rc_summary(self, summary: Dict[str, Any]) -> None:
+        """Receive summary from a Regional Coordinator."""
+        rc_id_str = summary.get("rc_id", "unknown")
+        rc_entity = EntityID(rc_id_str)
+
+        self._rc_summaries[rc_entity] = RCSummary(
+            rc_id=rc_entity,
+            region_id=summary.get("region_id", ""),
             timestamp_ms=summary.get("timestamp_ms", int(time.time() * 1000)),
             num_lfis=summary.get("num_lfis", 0),
             total_available_mw=summary.get("total_available_mw", 0.0),
@@ -105,26 +117,34 @@ class GlobalHarmonizer:
         # Global carbon throttle toward target
         if global_carbon > self._config.global_carbon_target:
             excess = (global_carbon - self._config.global_carbon_target) / self._config.global_carbon_target
-            constraints["carbon_throttle"] = max(0.5, 1.0 - excess * 0.5)
+            constraints["global_carbon_multiplier"] = max(0.5, 1.0 - excess * 0.5)
 
         # Global supply/demand balance
         if total_generation > 0:
             balance = total_consumption / total_generation
             if balance > 0.9:  # Approaching limit
-                constraints["load_balance_throttle"] = 0.9 - (balance - 0.9)
+                constraints["load_balance_throttle"] = max(0.5, 0.9 - (balance - 0.9))
+
+        # Kardashev trajectory incentive
+        # Type I civilization target: ~174 PW, current ~18 TW
+        # For now, just track growth
+        total_power_tw = total_generation / 1000.0  # MW to TW
+        kardashev_ratio = total_power_tw / 18.0  # relative to current civilization
+        constraints["kardashev_ratio"] = kardashev_ratio
 
         self._global_constraints = constraints
 
     def get_constraints_for_rc(self, rc_id: EntityID) -> Dict[str, float]:
         """Get constraints to send to a Regional Coordinator."""
-        # Could customize per-RC, for now return global
         return self._global_constraints.copy()
 
-    def get_global_summary(self) -> Dict:
+    def get_global_summary(self) -> Dict[str, Any]:
         """Get global system summary."""
         if not self._rc_summaries:
             return {
                 "gh_id": str(self._gh_id),
+                "foyer": self._config.foyer,
+                "timestamp_ms": int(time.time() * 1000),
                 "num_regions": 0,
                 "total_lfis": 0,
                 "total_compute_nodes": 0,
@@ -153,6 +173,7 @@ class GlobalHarmonizer:
 
         return {
             "gh_id": str(self._gh_id),
+            "foyer": self._config.foyer,
             "timestamp_ms": int(time.time() * 1000),
             "num_regions": len(self._rc_summaries),
             "total_lfis": total_lfis,
@@ -164,16 +185,16 @@ class GlobalHarmonizer:
             "global_constraints": self._global_constraints,
         }
 
-    def get_region_rankings(self) -> List[Dict]:
+    def get_region_rankings(self) -> List[Dict[str, Any]]:
         """Rank regions by efficiency."""
         rankings = []
-        for rc_id, summary in self._rc_summaries.items():
+        for rc_entity, summary in self._rc_summaries.items():
             carbon_score = 1.0 / (1.0 + summary.avg_carbon_intensity / 100.0)
             available_score = summary.total_available_mw / max(1.0, summary.total_consumption_mw)
             efficiency = carbon_score * 0.5 + available_score * 0.5
 
             rankings.append({
-                "rc_id": str(rc_id),
+                "rc_id": str(rc_entity),
                 "region_id": summary.region_id,
                 "efficiency_score": efficiency,
                 "carbon_intensity": summary.avg_carbon_intensity,
@@ -184,7 +205,7 @@ class GlobalHarmonizer:
         rankings.sort(key=lambda x: x["efficiency_score"], reverse=True)
         return rankings
 
-    def recommend_load_shift(self) -> List[Dict]:
+    def recommend_load_shift(self) -> List[Dict[str, Any]]:
         """Recommend load shifts between regions."""
         rankings = self.get_region_rankings()
         if len(rankings) < 2:

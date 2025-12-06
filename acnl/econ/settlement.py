@@ -1,12 +1,17 @@
-from __future__ import annotations
+"""
+ACNL Econ — Settlement Engine
 
-import time
+Settles energy consumption against generation.
+"""
+
+from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+import time
 
-from acnl.energy.types import EntityID
-from acnl.field.energy_field import EnergyField
-from acnl.econ.accounts import AccountLedger, Transaction
+from ..core.ids import EntityID
+from ..core.fields import LocalField
+from .accounts import AccountLedger, Transaction
 
 
 @dataclass
@@ -27,19 +32,10 @@ class SettlementConfig:
     """Configuration for settlement engine."""
     period_ms: int = 15 * 60 * 1000  # 15 minutes
     settlement_delay_ms: int = 60_000  # 1 minute after period ends
-    mwh_per_tcu: float = 0.001  # 1 TCU = 0.001 MWh
 
 
 class SettlementEngine:
-    """
-    Settles energy consumption against generation.
-
-    Runs periodically to:
-    1. Aggregate consumption by entity
-    2. Aggregate generation by entity
-    3. Credit/debit accounts accordingly
-    4. Record settlement transactions
-    """
+    """Settles energy consumption against generation."""
 
     def __init__(
         self,
@@ -69,7 +65,6 @@ class SettlementEngine:
 
         self._periods[period_id] = period
         self._current_period = period
-
         return period
 
     def record_consumption(
@@ -82,7 +77,6 @@ class SettlementEngine:
         if self._current_period is None:
             return
 
-        # Convert MW * ms to MWh
         hours = duration_ms / 3600_000
         mwh = power_mw * hours
 
@@ -107,25 +101,23 @@ class SettlementEngine:
 
     def record_from_field(
         self,
-        field: EnergyField,
+        field: LocalField,
         duration_ms: int,
     ) -> None:
-        """Record consumption and generation from an energy field snapshot."""
-        for point in field.points:
-            kind = point.get_entity_kind()
+        """Record consumption and generation from a field snapshot."""
+        for point in field.plants():
+            self.record_generation(
+                point.subject,
+                point.generation_power_mw,
+                duration_ms,
+            )
 
-            if kind == "compute-node":
-                self.record_consumption(
-                    point.subject,
-                    point.consumption_power_mw,
-                    duration_ms,
-                )
-            elif kind == "plant":
-                self.record_generation(
-                    point.subject,
-                    point.generation_power_mw,
-                    duration_ms,
-                )
+        for point in field.compute_nodes():
+            self.record_consumption(
+                point.subject,
+                point.consumption_power_mw,
+                duration_ms,
+            )
 
     def settle_period(self, period_id: str) -> List[Transaction]:
         """Settle a period and return transactions."""
@@ -150,7 +142,6 @@ class SettlementEngine:
 
         # Debit consumers
         for entity_id, mwh in period.consumption_mwh.items():
-            # Ensure account exists
             self._ledger.get_or_create_account(entity_id)
             tx = self._ledger.record_consumption(
                 entity_id,
@@ -162,22 +153,6 @@ class SettlementEngine:
 
         period.settled = True
         period.settlement_ms = int(time.time() * 1000)
-
-        return transactions
-
-    def settle_current(self) -> List[Transaction]:
-        """Settle current period and start new one."""
-        if self._current_period is None:
-            return []
-
-        transactions = self.settle_period(self._current_period.period_id)
-
-        # Start new period
-        self.start_period(
-            self._current_period.region_id,
-            self._current_period.end_ms,
-        )
-
         return transactions
 
     def tick(self, now_ms: int | None = None) -> List[Transaction]:
@@ -188,42 +163,12 @@ class SettlementEngine:
         if self._current_period is None:
             return []
 
-        # Check if period ended
         if now_ms >= self._current_period.end_ms + self._config.settlement_delay_ms:
-            return self.settle_current()
+            txs = self.settle_period(self._current_period.period_id)
+            self.start_period(
+                self._current_period.region_id,
+                self._current_period.end_ms,
+            )
+            return txs
 
         return []
-
-    def get_period(self, period_id: str) -> Optional[SettlementPeriod]:
-        """Get a settlement period by ID."""
-        return self._periods.get(period_id)
-
-    def get_current_period(self) -> Optional[SettlementPeriod]:
-        """Get current period."""
-        return self._current_period
-
-    def get_unsettled_periods(self) -> List[SettlementPeriod]:
-        """Get all unsettled periods."""
-        return [p for p in self._periods.values() if not p.settled]
-
-    def compute_settlement_summary(self, period_id: str) -> Dict:
-        """Compute summary for a settlement period."""
-        period = self._periods.get(period_id)
-        if period is None:
-            return {}
-
-        total_consumption = sum(period.consumption_mwh.values())
-        total_generation = sum(period.generation_mwh.values())
-
-        return {
-            "period_id": period_id,
-            "region_id": period.region_id,
-            "start_ms": period.start_ms,
-            "end_ms": period.end_ms,
-            "settled": period.settled,
-            "num_consumers": len(period.consumption_mwh),
-            "num_generators": len(period.generation_mwh),
-            "total_consumption_mwh": total_consumption,
-            "total_generation_mwh": total_generation,
-            "net_mwh": total_generation - total_consumption,
-        }

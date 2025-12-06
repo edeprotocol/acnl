@@ -1,39 +1,65 @@
-from __future__ import annotations
+"""
+ACNL Core — Cryptographic Primitives
 
-from dataclasses import dataclass
-from typing import Protocol, TypeVar, Generic
+NAIVE DESIGN (rejected):
+- Implement crypto by hand
+- Use weak algorithms
+
+CRITIQUE:
+- Homegrown crypto = vulnerabilities
+- Classical crypto = quantum-vulnerable
+
+FRACTAL DESIGN (implemented):
+- Abstract SignatureScheme interface
+- Mock implementation for dev/test
+- Ready for PQ crypto (Dilithium, Falcon, SPHINCS+)
+"""
+
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import TypeVar
 import hashlib
 import json
 import time
 
-from .types import EntityID
+from .ids import EntityID
+from .events import SigEnvelope
 
 T = TypeVar("T")
 
 
-class SignatureScheme(Protocol):
+class SignatureScheme(ABC):
     """
     Abstract interface for signature schemes.
-    Replace with Dilithium/Falcon for post-quantum in production.
+
+    Implementations:
+      - MockSignatureScheme: for development (NOT SECURE)
+      - Ed25519SignatureScheme: classical (TODO)
+      - DilithiumSignatureScheme: post-quantum (TODO)
     """
 
+    @abstractmethod
     def sign(self, payload: bytes) -> bytes:
         ...
 
+    @abstractmethod
     def verify(self, payload: bytes, signature: bytes) -> bool:
         ...
 
+    @abstractmethod
     def get_algorithm(self) -> str:
         ...
 
+    @abstractmethod
     def get_public_key_hint(self) -> str:
         ...
 
 
-class MockSignatureScheme:
+class MockSignatureScheme(SignatureScheme):
     """
-    Mock signature for development. NOT FOR PRODUCTION.
-    Replace with real PQ crypto (Dilithium, Falcon, etc.)
+    Mock signature for development.
+
+    ⚠️ NOT SECURE — DO NOT USE IN PRODUCTION ⚠️
     """
 
     def __init__(self, secret: str = "dev-secret"):
@@ -55,18 +81,16 @@ class MockSignatureScheme:
 
 
 def serialize_for_signing(obj) -> bytes:
-    """Serialize object for signing."""
-    return json.dumps(obj, default=str, sort_keys=True).encode()
+    """Deterministic JSON serialization for signing."""
+    return json.dumps(obj, default=str, sort_keys=True, separators=(',', ':')).encode()
 
 
 def wrap_with_signature(
     payload: T,
     signer: EntityID,
     scheme: SignatureScheme,
-) -> "SigEnvelope[T]":
+) -> SigEnvelope[T]:
     """Create a signed envelope."""
-    from .events import SigEnvelope
-
     payload_bytes = serialize_for_signing(payload)
     sig = scheme.sign(payload_bytes)
 
@@ -81,7 +105,7 @@ def wrap_with_signature(
 
 
 def verify_envelope(
-    envelope: "SigEnvelope[T]",
+    envelope: SigEnvelope[T],
     scheme: SignatureScheme,
 ) -> bool:
     """Verify a signed envelope."""

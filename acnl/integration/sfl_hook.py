@@ -1,17 +1,15 @@
+"""
+ACNL Integration — SFL Hook
+
+Integration hooks for Synthetic Field Layer (SFL) patterns.
+"""
+
 from __future__ import annotations
-
-"""
-SFL Hook - Integration with Synthetic Field Layer.
-
-This module provides hooks for SFL patterns to interact with
-the ACNL energy mesh.
-"""
-
 from dataclasses import dataclass
 from typing import Dict, Optional, Callable, Any
 
-from acnl.energy.types import EntityID, make_entity_id
-from acnl.control.lfi import LocalFieldIntegrator
+from ..core.ids import EntityID, make_entity_id
+from ..control.lfi import LocalFieldIntegrator
 
 
 @dataclass
@@ -37,16 +35,16 @@ class SFLEnergyHook:
 
     def __init__(self, lfi: LocalFieldIntegrator):
         self._lfi = lfi
-        self._pattern_nodes: Dict[EntityID, EntityID] = {}  # pattern -> compute node
+        self._pattern_nodes: Dict[EntityID, EntityID] = {}
 
     def register_pattern(
         self,
-        pattern_id: str,
-        compute_node_id: str,
+        pattern_name: str,
+        compute_node_name: str,
     ) -> EntityID:
         """Register a pattern and its hosting compute node."""
-        pid = make_entity_id("pattern", pattern_id)
-        nid = make_entity_id("compute-node", compute_node_id)
+        pid = make_entity_id("pattern", pattern_name)
+        nid = make_entity_id("compute-node", compute_node_name)
         self._pattern_nodes[pid] = nid
         return pid
 
@@ -77,7 +75,7 @@ class SFLEnergyHook:
             pattern_id=pattern_id,
             tau_limit=tau_limit,
             energy_headroom_mw=point.available_power_mw,
-            carbon_intensity=field.average_carbon_intensity(),
+            carbon_intensity=field.avg_carbon_intensity(),
             region_id=self._lfi.region_id,
             confidence=point.confidence,
         )
@@ -143,6 +141,6 @@ class EnergyConstrainedAllocator:
     ) -> Dict[EntityID, float]:
         """Allocate tau to multiple patterns."""
         allocations = {}
-        for pattern_id, requested in requests.items():
-            allocations[pattern_id] = self.allocate(pattern_id, requested)
+        for pid, requested in requests.items():
+            allocations[pid] = self.allocate(pid, requested)
         return allocations

@@ -1,209 +1,207 @@
+"""
+ACNL Control — Tau Limit Policies
+
+Policies transform EnergyFieldPoints into tau limits.
+τ = rate at which a pattern can consume energy/compute.
+
+NAIVE DESIGN (rejected):
+- Fixed quotas per pattern
+- Human-assigned priorities
+
+CRITIQUE:
+- Fixed quotas don't adapt to field state
+- Human priorities can't scale to 10^12 patterns
+- No energy-centric reasoning
+
+FRACTAL DESIGN (implemented):
+- Policies read field state
+- Compute tau_limit based on energy/cost/carbon/reliability
+- Patterns with high info_gain/tau survive. Others decay.
+"""
+
 from __future__ import annotations
-
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional, Dict
+from abc import ABC, abstractmethod
 
-from acnl.energy.types import EntityID
-from acnl.field.energy_field import EnergyField, EnergyFieldPoint
-
-
-@dataclass
-class TauLimitResult:
-    """Result of tau limit computation for a node."""
-    node_id: EntityID
-    tau_limit: float  # 0..2 typically
-    reason: str
-    energy_headroom_mw: float
-    carbon_factor: float
-    confidence: float
+from ..core.fields import FieldPoint
 
 
 class TauLimitPolicy(ABC):
     """
-    Abstract policy for computing tau limits from energy state.
+    Base policy: transforms FieldPoint → tau_limit.
 
-    Tau (τ) is the rate limit for compute operations.
-    Higher tau = more compute allowed.
+    tau_limit = maximum τ (energy consumption rate) for patterns
+    on this compute node given current field state.
     """
+
+    base_tau_max: float = 1.0
 
     @abstractmethod
     def compute(
         self,
-        point: EnergyFieldPoint,
-        field: EnergyField,
-        constraints: Dict[str, float] | None = None,
-    ) -> TauLimitResult:
-        """Compute tau limit for a single point."""
-        ...
-
-    @abstractmethod
-    def name(self) -> str:
-        """Policy name for logging/debugging."""
+        point: FieldPoint,
+        constraints: Optional[Dict[str, float]] = None,
+    ) -> float:
+        """Compute tau_limit for a field point."""
         ...
 
 
+@dataclass
 class DefaultTauLimitPolicy(TauLimitPolicy):
     """
-    Default tau limit policy based on:
-    - Available power headroom
-    - Carbon intensity (throttle high-carbon)
-    - Grid frequency deviation
-    - Regional constraints
+    Default policy based on price, carbon, congestion, reliability.
+
+    Tau is compressed when:
+      - Price is high
+      - Carbon intensity is high
+      - Line loading (congestion) is high
+      - Temperature is high
+      - Reliability is low
+      - Confidence is low
     """
 
-    def __init__(
-        self,
-        base_tau: float = 1.0,
-        max_tau: float = 2.0,
-        min_tau: float = 0.1,
-        carbon_threshold: float = 200.0,  # gCO2/kWh
-        freq_deadband: float = 0.05,  # Hz deviation from 50Hz
-    ):
-        self._base_tau = base_tau
-        self._max_tau = max_tau
-        self._min_tau = min_tau
-        self._carbon_threshold = carbon_threshold
-        self._freq_deadband = freq_deadband
+    base_tau_max: float = 1.0
 
-    def name(self) -> str:
-        return "default"
+    # Thresholds
+    price_high: float = 200.0       # €/MWh
+    price_medium: float = 100.0
+    carbon_high: float = 500.0      # gCO2/kWh
+    carbon_medium: float = 200.0
+    congestion_threshold: float = 0.8
+    temp_warning: float = 75.0      # °C
+    temp_critical: float = 85.0
 
     def compute(
         self,
-        point: EnergyFieldPoint,
-        field: EnergyField,
-        constraints: Dict[str, float] | None = None,
-    ) -> TauLimitResult:
-        constraints = constraints or {}
+        point: FieldPoint,
+        constraints: Optional[Dict[str, float]] = None,
+    ) -> float:
+        tau = self.base_tau_max
 
-        # Start with base tau
-        tau = self._base_tau
+        # ── Price penalty ──
+        price = point.price_energy
+        if price > self.price_high:
+            tau *= 0.25
+        elif price > self.price_medium:
+            tau *= 0.5
 
-        # Factor 1: Available power headroom
-        available_mw = point.available_power_mw
-        if available_mw > 100:
-            tau *= 1.2  # Plenty of headroom
-        elif available_mw < 10:
-            tau *= 0.5  # Limited headroom
-        elif available_mw < 1:
-            tau *= 0.1  # Critical
+        # ── Carbon penalty ──
+        carbon = point.carbon_intensity
+        if carbon > self.carbon_high:
+            tau *= 0.2
+        elif carbon > self.carbon_medium:
+            tau *= 0.5
 
-        # Factor 2: Carbon intensity
-        carbon = field.average_carbon_intensity()
-        carbon_factor = 1.0
-        if carbon > self._carbon_threshold:
-            # Throttle based on how much over threshold
-            carbon_factor = max(0.3, 1.0 - (carbon - self._carbon_threshold) / 500.0)
-            tau *= carbon_factor
+        # ── Congestion penalty ──
+        loading = point.line_loading
+        if loading > self.congestion_threshold:
+            congestion_factor = 1.0 - (loading - self.congestion_threshold) / (1.0 - self.congestion_threshold)
+            tau *= max(0.1, congestion_factor)
 
-        # Factor 3: Grid frequency
-        freq = point.grid_frequency_hz
-        freq_deviation = abs(freq - 50.0)
-        if freq_deviation > self._freq_deadband:
-            # Throttle proportionally to deviation
-            freq_factor = max(0.5, 1.0 - freq_deviation * 2)
-            tau *= freq_factor
+        # ── Temperature penalty ──
+        temp = point.temp_celsius
+        if temp > self.temp_critical:
+            tau *= 0.1
+        elif temp > self.temp_warning:
+            tau *= max(0.3, 1.0 - (temp - self.temp_warning) / (self.temp_critical - self.temp_warning))
 
-        # Factor 4: Regional constraints
-        if "carbon_throttle" in constraints:
-            tau *= constraints["carbon_throttle"]
-        if "emergency_curtail" in constraints:
-            tau *= (1.0 - constraints["emergency_curtail"])
+        # ── Reliability / Confidence ──
+        tau *= point.reliability * (0.4 + 0.6 * point.confidence)
 
-        # Clamp to limits
-        tau = max(self._min_tau, min(self._max_tau, tau))
+        # ── Regional constraints ──
+        if constraints:
+            tau *= constraints.get("carbon_throttle", 1.0)
+            tau *= constraints.get("power_quota", 1.0)
+            tau *= constraints.get("emergency_factor", 1.0)
 
-        return TauLimitResult(
-            node_id=point.subject,
-            tau_limit=tau,
-            reason=f"default policy: headroom={available_mw:.1f}MW, carbon={carbon:.0f}",
-            energy_headroom_mw=available_mw,
-            carbon_factor=carbon_factor,
-            confidence=point.confidence,
-        )
+        return max(0.0, min(self.base_tau_max, tau))
 
 
+@dataclass
 class KardashevPolicy(TauLimitPolicy):
     """
-    Kardashev-scale aware tau policy.
+    Policy aligned with Kardashev trajectory.
 
-    Optimized for multi-planetary operation where:
-    - Latency between nodes varies dramatically
-    - Energy sources include orbital solar, fusion, etc.
-    - Carbon may not be relevant (space operations)
+    Favors:
+      - Low carbon (toward Type I civilization)
+      - High exergy efficiency
+      - Sustainable growth
 
-    Named after the Kardashev scale for civilizational energy usage.
+    This is a civilizational-scale policy applied by GH.
     """
 
-    def __init__(
-        self,
-        base_tau: float = 1.0,
-        max_tau: float = 5.0,  # Higher max for advanced energy
-        min_tau: float = 0.01,
-        energy_density_threshold: float = 1000.0,  # MW
-    ):
-        self._base_tau = base_tau
-        self._max_tau = max_tau
-        self._min_tau = min_tau
-        self._density_threshold = energy_density_threshold
+    base_tau_max: float = 1.0
 
-    def name(self) -> str:
-        return "kardashev"
+    # Kardashev targets
+    target_exergy_tw: float = 100.0      # Type I = ~174 PW, start with 100 TW goal
+    current_exergy_tw: float = 18.0
+    growth_target: float = 0.02          # 2% growth per period
+    carbon_ceiling: float = 50.0         # Target carbon intensity
 
     def compute(
         self,
-        point: EnergyFieldPoint,
-        field: EnergyField,
-        constraints: Dict[str, float] | None = None,
-    ) -> TauLimitResult:
-        constraints = constraints or {}
+        point: FieldPoint,
+        constraints: Optional[Dict[str, float]] = None,
+    ) -> float:
+        tau = self.base_tau_max
 
-        # Energy density determines scaling
-        total_gen = field.total_generation()
-        num_nodes = len(field.get_compute_nodes()) or 1
-
-        energy_per_node = total_gen / num_nodes
-
-        # Scale tau based on energy density
-        if energy_per_node > self._density_threshold:
-            # Type II territory - abundant energy
-            tau = self._base_tau * 2.0
-        elif energy_per_node > self._density_threshold / 10:
-            # Type I territory - planetary scale
-            tau = self._base_tau * 1.5
+        # ── Carbon: exponential penalty above ceiling ──
+        carbon = point.carbon_intensity
+        if carbon > self.carbon_ceiling:
+            ratio = carbon / self.carbon_ceiling
+            tau *= max(0.1, 1.0 / (ratio ** 1.5))
         else:
-            # Sub-planetary - careful allocation
-            tau = self._base_tau
+            # Bonus for very low carbon
+            tau *= min(1.3, self.carbon_ceiling / max(carbon, 1))
 
-        # Available headroom still matters
-        available_mw = point.available_power_mw
-        headroom_factor = min(2.0, max(0.1, available_mw / 50.0))
-        tau *= headroom_factor
+        # ── Reliability is critical at civilizational scale ──
+        tau *= point.reliability ** 2
 
-        # Apply constraints
-        if "priority_boost" in constraints:
-            tau *= (1.0 + constraints["priority_boost"])
+        # ── Confidence weight ──
+        tau *= (0.3 + 0.7 * point.confidence)
 
-        # Clamp
-        tau = max(self._min_tau, min(self._max_tau, tau))
+        # ── Apply global constraints ──
+        if constraints:
+            kardashev_ratio = constraints.get("kardashev_ratio", 1.0)
+            if kardashev_ratio < 0.3:
+                # Far below trajectory: encourage growth
+                tau *= 1.5
+            elif kardashev_ratio > 1.2:
+                # Above trajectory: stabilize
+                tau *= 0.8
 
-        return TauLimitResult(
-            node_id=point.subject,
-            tau_limit=tau,
-            reason=f"kardashev policy: density={energy_per_node:.0f}MW/node",
-            energy_headroom_mw=available_mw,
-            carbon_factor=1.0,  # Not used in Kardashev
-            confidence=point.confidence,
-        )
+            tau *= constraints.get("growth_incentive", 1.0)
+            tau *= constraints.get("global_carbon_multiplier", 1.0)
+
+        return max(0.0, min(self.base_tau_max * 1.5, tau))
 
 
-def get_policy(name: str) -> TauLimitPolicy:
-    """Get a tau limit policy by name."""
-    policies = {
-        "default": DefaultTauLimitPolicy,
-        "kardashev": KardashevPolicy,
-    }
-    if name not in policies:
-        raise ValueError(f"Unknown policy: {name}. Available: {list(policies.keys())}")
-    return policies[name]()
+@dataclass
+class EmergencyPolicy(TauLimitPolicy):
+    """
+    Emergency policy for grid stability events.
+
+    Activated when:
+      - Frequency deviation > threshold
+      - Voltage collapse risk
+      - Cascading failure detected
+    """
+
+    base_tau_max: float = 0.1  # Very conservative
+
+    def compute(
+        self,
+        point: FieldPoint,
+        constraints: Optional[Dict[str, float]] = None,
+    ) -> float:
+        # In emergency, only essential compute continues
+        if point.reliability < 0.5:
+            return 0.0
+
+        # Check grid frequency (50 Hz nominal)
+        freq = point.get("grid_frequency", 50.0)
+        if abs(freq - 50.0) > 0.5:
+            return 0.05  # Minimal compute
+
+        return self.base_tau_max * point.reliability

@@ -1,63 +1,32 @@
 """
-ACNL Control Module - Fractal control hierarchy (LFI, RC, GH).
+ACNL Control — Agentic Controllers
+
+Fractal control hierarchy: LFI → RC → GH
 """
 from .policies import (
-    TauLimitResult,
     TauLimitPolicy,
     DefaultTauLimitPolicy,
     KardashevPolicy,
-    get_policy,
+    EmergencyPolicy,
 )
-from .challenges import (
-    TrustScore,
-    ChallengeConfig,
-    ChallengeController,
-    CHALLENGE_POWER_CORRELATION,
-    CHALLENGE_LATENCY_CHECK,
-    CHALLENGE_COMPUTE_BENCHMARK,
-    make_power_correlation_verifier,
-    make_latency_verifier,
-)
-from .lfi import (
-    LFIConfig,
-    LocalFieldIntegrator,
-)
-from .rc import (
-    RCConfig,
-    LFISummary,
-    RegionalCoordinator,
-)
-from .gh import (
-    GHConfig,
-    RCSummary,
-    GlobalHarmonizer,
-)
+from .challenges import ChallengeController
+from .lfi import LocalFieldIntegrator, LFIConfig
+from .rc import RegionalCoordinator, RCConfig
+from .gh import GlobalHarmonizer, GHConfig
 
 __all__ = [
     # Policies
-    "TauLimitResult",
     "TauLimitPolicy",
     "DefaultTauLimitPolicy",
     "KardashevPolicy",
-    "get_policy",
+    "EmergencyPolicy",
     # Challenges
-    "TrustScore",
-    "ChallengeConfig",
     "ChallengeController",
-    "CHALLENGE_POWER_CORRELATION",
-    "CHALLENGE_LATENCY_CHECK",
-    "CHALLENGE_COMPUTE_BENCHMARK",
-    "make_power_correlation_verifier",
-    "make_latency_verifier",
-    # LFI
-    "LFIConfig",
+    # Controllers
     "LocalFieldIntegrator",
-    # RC
-    "RCConfig",
-    "LFISummary",
+    "LFIConfig",
     "RegionalCoordinator",
-    # GH
-    "GHConfig",
-    "RCSummary",
+    "RCConfig",
     "GlobalHarmonizer",
+    "GHConfig",
 ]

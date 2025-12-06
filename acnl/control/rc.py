@@ -1,10 +1,21 @@
+"""
+ACNL Control — Regional Coordinator (RC)
+
+RC = middle level of the fractal hierarchy.
+
+Responsibilities:
+- Aggregate summaries from multiple LFIs
+- Compute regional constraints
+- Balance load across LFIs
+- Report to Global Harmonizer
+"""
+
 from __future__ import annotations
-
-import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+import time
 
-from acnl.energy.types import EntityID, make_entity_id
+from ..core.ids import EntityID, rc_id
 
 
 @dataclass
@@ -33,18 +44,12 @@ class LFISummary:
 
 class RegionalCoordinator:
     """
-    Regional Coordinator (RC) - middle level of the fractal hierarchy.
-
-    Responsibilities:
-    - Aggregate summaries from multiple LFIs
-    - Compute regional constraints
-    - Balance load across LFIs
-    - Report to Global Harmonizer
+    Regional Coordinator — middle level of the fractal hierarchy.
     """
 
     def __init__(self, config: RCConfig):
         self._config = config
-        self._rc_id = make_entity_id("rc", config.rc_name)
+        self._rc_id = rc_id(config.rc_name)
 
         self._lfi_summaries: Dict[EntityID, LFISummary] = {}
         self._regional_constraints: Dict[str, float] = {}
@@ -60,13 +65,14 @@ class RegionalCoordinator:
     def region_id(self) -> str:
         return self._config.region_id
 
-    def receive_lfi_summary(self, summary: Dict) -> None:
+    def receive_lfi_summary(self, summary: Dict[str, Any]) -> None:
         """Receive summary from an LFI."""
-        lfi_id = EntityID(summary["lfi_id"])
+        lfi_id_str = summary.get("lfi_id", "unknown")
+        lfi_entity = EntityID(lfi_id_str)
 
-        self._lfi_summaries[lfi_id] = LFISummary(
-            lfi_id=lfi_id,
-            region_id=summary["region_id"],
+        self._lfi_summaries[lfi_entity] = LFISummary(
+            lfi_id=lfi_entity,
+            region_id=summary.get("region_id", ""),
             timestamp_ms=summary.get("timestamp_ms", int(time.time() * 1000)),
             total_available_mw=summary.get("total_available_mw", 0.0),
             total_consumption_mw=summary.get("total_consumption_mw", 0.0),
@@ -121,7 +127,7 @@ class RegionalCoordinator:
 
         # Available power constraint
         if total_available < total_consumption * 0.1:
-            constraints["emergency_curtail"] = 0.5
+            constraints["emergency_factor"] = 0.5
 
         # Apply global constraints
         for k, v in self._global_constraints.items():
@@ -140,12 +146,13 @@ class RegionalCoordinator:
         """Set constraints from Global Harmonizer."""
         self._global_constraints = constraints
 
-    def get_summary(self) -> Dict:
+    def get_summary(self) -> Dict[str, Any]:
         """Get summary for Global Harmonizer."""
         if not self._lfi_summaries:
             return {
                 "region_id": self._config.region_id,
                 "rc_id": str(self._rc_id),
+                "timestamp_ms": int(time.time() * 1000),
                 "num_lfis": 0,
                 "total_available_mw": 0.0,
                 "total_consumption_mw": 0.0,
@@ -186,12 +193,12 @@ class RegionalCoordinator:
     def get_lfi_rankings(self) -> List[EntityID]:
         """Rank LFIs by efficiency (low carbon, high availability)."""
         rankings = []
-        for lfi_id, summary in self._lfi_summaries.items():
+        for lfi_id_entity, summary in self._lfi_summaries.items():
             # Score: lower carbon is better, higher available is better
             carbon_score = 1.0 / (1.0 + summary.avg_carbon_intensity / 100.0)
             available_score = summary.total_available_mw / max(1.0, summary.total_consumption_mw)
             score = carbon_score * 0.5 + available_score * 0.5
-            rankings.append((lfi_id, score))
+            rankings.append((lfi_id_entity, score))
 
         rankings.sort(key=lambda x: x[1], reverse=True)
         return [r[0] for r in rankings]

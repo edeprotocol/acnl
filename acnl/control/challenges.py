@@ -1,15 +1,22 @@
-from __future__ import annotations
+"""
+ACNL Control — Challenge Controller
 
-import math
-import time
-import uuid
+Issues and verifies challenges to nodes.
+Challenges are used to verify that nodes are:
+- Actually consuming the power they claim
+- Located where they claim
+- Performing the compute they report
+"""
+
+from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
+import time
+import math
 
-from acnl.energy.types import EntityID, Coord
-from acnl.energy.events import Challenge, Proof, SigEnvelope
-from acnl.energy.crypto import SignatureScheme, wrap_with_signature
-from acnl.energy.store import EnergyEventStore
+from ..core.ids import EntityID, Coord
+from ..core.events import Challenge, Proof
+from ..store.event_store import EventStore
 
 
 @dataclass
@@ -17,11 +24,10 @@ class TrustScore:
     """Trust score for a node based on challenge history."""
     node_id: EntityID
     score: float  # 0..1
-    challenges_issued: int
-    challenges_passed: int
-    challenges_failed: int
-    last_challenge_ms: int
-    decay_rate: float = 0.99
+    challenges_issued: int = 0
+    challenges_passed: int = 0
+    challenges_failed: int = 0
+    last_challenge_ms: int = 0
 
 
 @dataclass
@@ -39,110 +45,91 @@ class ChallengeConfig:
 class ChallengeController:
     """
     Issues and verifies challenges to nodes.
-
-    Challenges are used to verify that nodes are:
-    - Actually consuming the power they claim
-    - Located where they claim
-    - Performing the compute they report
     """
 
     def __init__(
         self,
-        store: EnergyEventStore,
-        signer: SignatureScheme,
+        store: EventStore,
         challenger_id: EntityID,
+        region_id: str,
         config: ChallengeConfig | None = None,
         verifiers: Dict[str, Callable[[Challenge, Proof], bool]] | None = None,
     ):
         self._store = store
-        self._signer = signer
         self._challenger_id = challenger_id
+        self._region_id = region_id
         self._config = config or ChallengeConfig()
         self._verifiers = verifiers or {}
 
         self._trust_scores: Dict[EntityID, TrustScore] = {}
-        self._pending_challenges: Dict[str, SigEnvelope[Challenge]] = {}
+        self._pending_challenges: Dict[str, Challenge] = {}
 
     def issue_challenge(
         self,
         target: EntityID,
         challenge_type: str,
         payload: Dict,
-        region_id: str,
-    ) -> SigEnvelope[Challenge]:
+    ) -> Challenge:
         """Issue a new challenge to a target node."""
         challenge = Challenge.create(
             challenger=self._challenger_id,
             target=target,
-            coord=Coord.now(region_id),
+            coord=Coord.now(self._region_id),
             challenge_type=challenge_type,
             payload=payload,
             timeout_ms=self._config.timeout_ms,
         )
 
-        envelope = wrap_with_signature(challenge, self._challenger_id, self._signer)
-
-        self._store.add_challenge(envelope)
-        self._pending_challenges[challenge.challenge_id] = envelope
+        self._store.add_challenge(challenge)
+        self._pending_challenges[challenge.challenge_id] = challenge
 
         # Update trust score tracking
         if target not in self._trust_scores:
             self._trust_scores[target] = TrustScore(
                 node_id=target,
                 score=self._config.initial_trust,
-                challenges_issued=0,
-                challenges_passed=0,
-                challenges_failed=0,
-                last_challenge_ms=0,
             )
 
         self._trust_scores[target].challenges_issued += 1
         self._trust_scores[target].last_challenge_ms = int(time.time() * 1000)
 
-        return envelope
+        return challenge
 
     def submit_proof(
         self,
         challenge_id: str,
         responder: EntityID,
         result: Dict,
-        region_id: str,
-    ) -> SigEnvelope[Proof]:
+    ) -> Proof:
         """Submit a proof in response to a challenge."""
         proof = Proof.create(
             challenge_id=challenge_id,
             responder=responder,
-            coord=Coord.now(region_id),
+            coord=Coord.now(self._region_id),
             result=result,
         )
 
-        envelope = wrap_with_signature(proof, responder, self._signer)
-        self._store.add_proof(envelope)
+        self._store.add_proof(proof)
+        return proof
 
-        return envelope
-
-    def verify_proof(
-        self,
-        challenge_id: str,
-    ) -> bool:
+    def verify_proof(self, challenge_id: str) -> bool:
         """Verify a proof against its challenge."""
         if challenge_id not in self._pending_challenges:
             return False
 
-        challenge_env = self._pending_challenges[challenge_id]
-        challenge = challenge_env.payload
+        challenge = self._pending_challenges[challenge_id]
+        proofs = self._store.get_proofs_for_challenge(challenge_id)
 
-        proofs = self._store.get_proofs(challenge_id)
         if not proofs:
             return False
 
-        proof_env = proofs[0]  # Take first proof
-        proof = proof_env.payload
+        proof = proofs[0]  # Take first proof
+        now_ms = int(time.time() * 1000)
 
         # Check timeout
-        now_ms = int(time.time() * 1000)
         if proof.coord.ts_ms - challenge.coord.ts_ms > challenge.timeout_ms:
             self._record_failure(challenge.target)
+            self._store.update_challenge_status(challenge_id, "timeout")
             return False
 
         # Check if we have a verifier for this type
@@ -151,16 +138,20 @@ class ChallengeController:
             result = verifier(challenge, proof)
             if result:
                 self._record_pass(challenge.target)
+                self._store.update_challenge_status(challenge_id, "completed")
             else:
                 self._record_failure(challenge.target)
+                self._store.update_challenge_status(challenge_id, "failed")
             return result
 
         # Default: accept if proof came from correct responder
         if proof.responder == challenge.target:
             self._record_pass(challenge.target)
+            self._store.update_challenge_status(challenge_id, "completed")
             return True
 
         self._record_failure(challenge.target)
+        self._store.update_challenge_status(challenge_id, "failed")
         return False
 
     def _record_pass(self, node_id: EntityID) -> None:
@@ -217,8 +208,8 @@ class ChallengeController:
             return True
 
         # Random challenge based on trust (lower trust = more challenges)
-        challenge_prob = 1.0 - trust
         import random
+        challenge_prob = 1.0 - trust
         return random.random() < challenge_prob
 
     def cleanup_expired(self) -> int:
@@ -226,13 +217,13 @@ class ChallengeController:
         now_ms = int(time.time() * 1000)
         expired = []
 
-        for cid, env in self._pending_challenges.items():
-            challenge = env.payload
+        for cid, challenge in self._pending_challenges.items():
             if now_ms - challenge.coord.ts_ms > challenge.timeout_ms * 2:
                 expired.append(cid)
                 # Record as failure if no proof
-                if not self._store.get_proofs(cid):
+                if not self._store.get_proofs_for_challenge(cid):
                     self._record_failure(challenge.target)
+                    self._store.update_challenge_status(cid, "timeout")
 
         for cid in expired:
             del self._pending_challenges[cid]

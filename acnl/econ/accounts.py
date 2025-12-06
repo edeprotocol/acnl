@@ -1,12 +1,18 @@
-from __future__ import annotations
+"""
+ACNL Econ — Energy Accounts
 
-import time
-import threading
+Energy credit accounts for compute entities.
+Application layer — not core to field computation.
+"""
+
+from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from enum import Enum
+import time
+import threading
 
-from acnl.energy.types import EntityID
+from ..core.ids import EntityID
 
 
 class AccountStatus(str, Enum):
@@ -17,11 +23,7 @@ class AccountStatus(str, Enum):
 
 @dataclass
 class EnergyAccount:
-    """
-    Energy credit account for a compute entity.
-
-    Credits are denominated in MW-hours (MWh) of compute capacity.
-    """
+    """Energy credit account for a compute entity."""
     account_id: str
     entity_id: EntityID
     balance_mwh: float = 0.0
@@ -31,7 +33,7 @@ class EnergyAccount:
     last_activity_ms: int = field(default_factory=lambda: int(time.time() * 1000))
 
     def available_credit(self) -> float:
-        """Total available credit (balance + credit line)."""
+        """Total available credit."""
         return self.balance_mwh + self.credit_limit_mwh
 
     def can_consume(self, mwh: float) -> bool:
@@ -41,7 +43,7 @@ class EnergyAccount:
         return self.available_credit() >= mwh
 
     def debit(self, mwh: float) -> bool:
-        """Debit the account. Returns False if insufficient funds."""
+        """Debit the account."""
         if not self.can_consume(mwh):
             return False
         self.balance_mwh -= mwh
@@ -62,15 +64,13 @@ class Transaction:
     to_account: str
     amount_mwh: float
     timestamp_ms: int
-    tx_type: str  # "consumption", "generation", "transfer", "settlement"
+    tx_type: str
     memo: str = ""
     region_id: str = ""
 
 
 class AccountLedger:
-    """
-    Thread-safe ledger for energy accounts and transactions.
-    """
+    """Thread-safe ledger for energy accounts."""
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -85,20 +85,17 @@ class AccountLedger:
         initial_balance: float = 0.0,
         credit_limit: float = 100.0,
     ) -> EnergyAccount:
-        """Create a new account for an entity."""
+        """Create a new account."""
         with self._lock:
             account_id = f"acct-{len(self._accounts)+1:06d}"
-
             account = EnergyAccount(
                 account_id=account_id,
                 entity_id=entity_id,
                 balance_mwh=initial_balance,
                 credit_limit_mwh=credit_limit,
             )
-
             self._accounts[account_id] = account
             self._by_entity[entity_id] = account_id
-
             return account
 
     def get_account(self, account_id: str) -> Optional[EnergyAccount]:
@@ -161,7 +158,6 @@ class AccountLedger:
                 region_id=region_id,
             )
             self._transactions.append(tx)
-
             return tx
 
     def record_consumption(
@@ -170,7 +166,7 @@ class AccountLedger:
         amount_mwh: float,
         region_id: str = "",
     ) -> Optional[Transaction]:
-        """Record energy consumption by an entity."""
+        """Record energy consumption."""
         with self._lock:
             account = self.get_account_by_entity(entity_id)
             if account is None:
@@ -190,7 +186,6 @@ class AccountLedger:
                 region_id=region_id,
             )
             self._transactions.append(tx)
-
             return tx
 
     def record_generation(
@@ -199,7 +194,7 @@ class AccountLedger:
         amount_mwh: float,
         region_id: str = "",
     ) -> Optional[Transaction]:
-        """Record energy generation by an entity."""
+        """Record energy generation."""
         with self._lock:
             account = self.get_or_create_account(entity_id)
             account.credit(amount_mwh)
@@ -215,32 +210,9 @@ class AccountLedger:
                 region_id=region_id,
             )
             self._transactions.append(tx)
-
             return tx
 
-    def get_transactions(
-        self,
-        account_id: str | None = None,
-        since_ms: int | None = None,
-        tx_type: str | None = None,
-    ) -> List[Transaction]:
-        """Query transactions with optional filters."""
-        with self._lock:
-            result = self._transactions.copy()
-
-            if account_id:
-                result = [
-                    t for t in result
-                    if t.from_account == account_id or t.to_account == account_id
-                ]
-            if since_ms:
-                result = [t for t in result if t.timestamp_ms >= since_ms]
-            if tx_type:
-                result = [t for t in result if t.tx_type == tx_type]
-
-            return result
-
-    def get_balance_summary(self) -> Dict:
+    def get_balance_summary(self) -> Dict[str, float]:
         """Get summary of all account balances."""
         with self._lock:
             total_balance = sum(a.balance_mwh for a in self._accounts.values())
@@ -248,7 +220,6 @@ class AccountLedger:
                 1 for a in self._accounts.values()
                 if a.status == AccountStatus.ACTIVE
             )
-
             return {
                 "total_accounts": len(self._accounts),
                 "active_accounts": active_accounts,
